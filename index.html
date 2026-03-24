@@ -21,19 +21,22 @@
 <body>
   <div id="root"></div>
   <script type="text/babel">
-    const { useState, useCallback, useMemo, useRef } = React;
+    const { useState, useCallback, useMemo, useRef, useEffect } = React;
 
     const COLS = 49;
     const ROWS = 4;
     const TOTAL_PANELS = COLS * ROWS; // 196
 
+    const STORAGE_KEY_STAGES = 'jefferson_roof_stages';
+    const STORAGE_KEY_IMAGE = 'jefferson_roof_image';
+
     const STAGES = [null, 'Started', 'Printed', 'Laminated', 'Done'];
     const STAGE_OVERLAY = {
-      [null]: 'transparent',
-      Started: 'rgba(240, 208, 0, 0.45)',
-      Printed: 'rgba(232, 138, 42, 0.5)',
-      Laminated: 'rgba(126, 200, 227, 0.45)',
-      Done: 'rgba(76, 175, 80, 0.5)',
+      [null]: 'rgba(0, 0, 0, 0)',
+      Started: 'rgba(240, 208, 0, 0.55)',
+      Printed: 'rgba(232, 138, 42, 0.6)',
+      Laminated: 'rgba(126, 200, 227, 0.55)',
+      Done: 'rgba(76, 175, 80, 0.6)',
     };
     const STAGE_COLORS = {
       [null]: '#d0d0d0',
@@ -51,23 +54,76 @@
     };
 
     // Panel numbering: left-to-right, bottom row first.
-    //   Row 1 (bottom): panels 1–49
-    //   Row 2: panels 50–98
-    //   Row 3: panels 99–147
-    //   Row 4 (top): panels 148–196
+    //   Row 1 (bottom): panels 1-49
+    //   Row 2: panels 50-98
+    //   Row 3: panels 99-147
+    //   Row 4 (top): panels 148-196
     function panelNumber(rowFromBottom, col) {
       return rowFromBottom * COLS + col + 1;
     }
 
+    // --- localStorage helpers ---
+    function loadStages() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY_STAGES);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          // Rebuild full object ensuring all 196 keys exist
+          const result = {};
+          for (let i = 1; i <= TOTAL_PANELS; i++) {
+            result[i] = parsed[i] || null;
+          }
+          return result;
+        }
+      } catch (e) { /* ignore */ }
+      const init = {};
+      for (let i = 1; i <= TOTAL_PANELS; i++) init[i] = null;
+      return init;
+    }
+
+    function saveStages(stages) {
+      try {
+        // Only save non-null stages to reduce storage size
+        const sparse = {};
+        for (const [k, v] of Object.entries(stages)) {
+          if (v !== null) sparse[k] = v;
+        }
+        localStorage.setItem(STORAGE_KEY_STAGES, JSON.stringify(sparse));
+      } catch (e) { /* ignore */ }
+    }
+
+    function loadImage() {
+      try {
+        return localStorage.getItem(STORAGE_KEY_IMAGE);
+      } catch (e) { return null; }
+    }
+
+    function saveImage(dataUrl) {
+      try {
+        localStorage.setItem(STORAGE_KEY_IMAGE, dataUrl);
+      } catch (e) {
+        console.warn('Image too large for localStorage, will need to reload on refresh.');
+      }
+    }
+
+    function fileToDataUrl(file) {
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.readAsDataURL(file);
+      });
+    }
+
     function App() {
-      const [imageUrl, setImageUrl] = useState(null);
+      const [imageUrl, setImageUrl] = useState(() => loadImage());
       const fileInputRef = useRef(null);
 
-      const [stages, setStages] = useState(() => {
-        const init = {};
-        for (let i = 1; i <= TOTAL_PANELS; i++) init[i] = null;
-        return init;
-      });
+      const [stages, setStages] = useState(loadStages);
+
+      // Persist stages whenever they change
+      useEffect(() => {
+        saveStages(stages);
+      }, [stages]);
 
       const counts = useMemo(() => {
         const c = { [null]: 0, Started: 0, Printed: 0, Laminated: 0, Done: 0 };
@@ -84,6 +140,7 @@
       }, []);
 
       const handleReset = useCallback(() => {
+        if (!window.confirm('Reset all panels to None?')) return;
         setStages(() => {
           const reset = {};
           for (let i = 1; i <= TOTAL_PANELS; i++) reset[i] = null;
@@ -91,15 +148,15 @@
         });
       }, []);
 
-      const handleFile = useCallback((e) => {
+      const handleFile = useCallback(async (e) => {
         const file = e.target.files[0];
         if (!file) return;
-        const url = URL.createObjectURL(file);
-        setImageUrl(url);
+        const dataUrl = await fileToDataUrl(file);
+        setImageUrl(dataUrl);
+        saveImage(dataUrl);
       }, []);
 
       // Display: top row (row 4) at top of screen, bottom row (row 1) at bottom
-      // rowFromBottom: 3=top displayed first, 0=bottom displayed last
       const displayRows = [3, 2, 1, 0];
 
       return (
@@ -108,7 +165,7 @@
             Jefferson Health Training Complex — Roof Panel Tracker
           </h1>
 
-          {/* Image loader */}
+          {/* Image loader - only show if no image loaded */}
           {!imageUrl && (
             <div style={{
               textAlign: 'center', marginBottom: 12, padding: 16,
@@ -117,13 +174,6 @@
               <p style={{ marginBottom: 8, fontSize: '0.9rem' }}>
                 Load the roof graphic image to use as panel backgrounds
               </p>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                onChange={handleFile}
-                style={{ display: 'none' }}
-              />
               <button
                 onClick={() => fileInputRef.current.click()}
                 style={{
@@ -187,7 +237,6 @@
             <div style={{ display: 'flex', flexDirection: 'column', gap: 1, minWidth: 'fit-content' }}>
               {displayRows.map(rowFromBottom => {
                 const rowLabel = `Row ${rowFromBottom + 1}`;
-                // For background-position, we need row index from top (0=top)
                 const rowFromTop = ROWS - 1 - rowFromBottom;
                 const bgY = ROWS > 1 ? (rowFromTop / (ROWS - 1)) * 100 : 0;
 
@@ -227,7 +276,15 @@
                             backgroundRepeat: 'no-repeat',
                           }}
                         >
-                          {/* Stage overlay */}
+                          {/* Grayscale + dim overlay to mute the image */}
+                          <div style={{
+                            position: 'absolute',
+                            inset: 0,
+                            backdropFilter: 'grayscale(100%)',
+                            WebkitBackdropFilter: 'grayscale(100%)',
+                            background: 'rgba(0, 0, 0, 0.35)',
+                          }} />
+                          {/* Stage color overlay */}
                           <div style={{
                             position: 'absolute',
                             inset: 0,
@@ -237,8 +294,8 @@
                             justifyContent: 'center',
                             fontSize: '0.5rem',
                             fontWeight: 700,
-                            color: stage ? '#fff' : 'rgba(255,255,255,0.5)',
-                            textShadow: '0 0 3px rgba(0,0,0,0.8)',
+                            color: '#fff',
+                            textShadow: '0 0 3px rgba(0,0,0,0.9)',
                             transition: 'background 0.15s',
                           }}>
                             {pNum}
