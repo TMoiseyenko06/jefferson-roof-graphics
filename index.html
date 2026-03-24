@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jefferson Roof Panel Production Tracker</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      min-height: 100vh;
+    }
+    #root { padding: 12px; }
+    .conn-status {
+      position: fixed; top: 8px; right: 12px; padding: 4px 10px;
+      border-radius: 4px; font-size: 0.7rem; font-weight: 600; z-index: 100;
+    }
+    .conn-status.connected { background: #4caf50; color: #fff; }
+    .conn-status.disconnected { background: #c0392b; color: #fff; }
+    .conn-status.setup { background: #e88a2a; color: #fff; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useCallback, useMemo, useRef, useEffect } = React;
+
+    const COLS = 49;
+    const ROWS = 4;
+    const TOTAL_PANELS = COLS * ROWS; // 196
+
+    const STAGES = [null, 'Started', 'Printed', 'Laminated', 'Done'];
+    const STAGE_OVERLAY = {
+      [null]: 'rgba(0, 0, 0, 0)',
+      Started: 'rgba(240, 208, 0, 0.55)',
+      Printed: 'rgba(232, 138, 42, 0.6)',
+      Laminated: 'rgba(126, 200, 227, 0.55)',
+      Done: 'rgba(76, 175, 80, 0.6)',
+    };
+    const STAGE_COLORS = {
+      [null]: '#d0d0d0',
+      Started: '#f0d000',
+      Printed: '#e88a2a',
+      Laminated: '#7ec8e3',
+      Done: '#4caf50',
+    };
+    const STAGE_TEXT_COLORS = {
+      [null]: '#444',
+      Started: '#444',
+      Printed: '#fff',
+      Laminated: '#1a1a2e',
+      Done: '#fff',
+    };
+
+    const DEFAULT_IMAGE = 'RoofGraphic_3dpi.png';
+
+    function panelNumber(rowFromBottom, col) {
+      return rowFromBottom * COLS + col + 1;
+    }
+
+    function initStages() {
+      const init = {};
+      for (let i = 1; i <= TOTAL_PANELS; i++) init[i] = null;
+      return init;
+    }
+
+    function buildStagesFromSnapshot(snap) {
+      const result = initStages();
+      if (snap) {
+        for (const [k, v] of Object.entries(snap)) {
+          if (k.startsWith('p')) {
+            const num = k.slice(1);
+            result[num] = v;
+          }
+        }
+      }
+      return result;
+    }
+
+    // ─── Firebase config ───
+    // INSTRUCTIONS: Replace these values with your Firebase project config.
+    // 1. Go to https://console.firebase.google.com
+    // 2. Create a new project (or use an existing one)
+    // 3. Go to Project Settings > General > Your apps > Add web app
+    // 4. Copy the firebaseConfig values below
+    // 5. Go to Realtime Database > Create Database > Start in TEST MODE
+    const FIREBASE_CONFIG = {
+      apiKey: "AIzaSyAfdVDSfsVKU0zk1SMProC_zHzxkuhjHw0",
+      authDomain: "jefferson-roof.firebaseapp.com",
+      databaseURL: "https://jefferson-roof-default-rtdb.firebaseio.com",
+      projectId: "jefferson-roof",
+      storageBucket: "jefferson-roof.firebasestorage.app",
+      messagingSenderId: "863550186522",
+      appId: "1:863550186522:web:cfc8ee0a790d49ff4a1da3"
+    };
+
+    const needsSetup = FIREBASE_CONFIG.apiKey === "YOUR_API_KEY";
+    let db = null;
+    if (!needsSetup) {
+      firebase.initializeApp(FIREBASE_CONFIG);
+      db = firebase.database();
+    }
+
+    // ─── Firebase hook for a single set ───
+    function useFirebaseSet(setId) {
+      const [stages, setStages] = useState(initStages);
+      const [connected, setConnected] = useState(false);
+      const refPath = `panels/set${setId}`;
+
+      useEffect(() => {
+        if (!db) return;
+        const ref = db.ref(refPath);
+
+        // Listen for real-time changes
+        const handler = ref.on('value', (snapshot) => {
+          setConnected(true);
+          const val = snapshot.val();
+          setStages(buildStagesFromSnapshot(val));
+        });
+
+        // Connection state
+        const connRef = db.ref('.info/connected');
+        const connHandler = connRef.on('value', (snap) => {
+          setConnected(snap.val() === true);
+        });
+
+        return () => {
+          ref.off('value', handler);
+          connRef.off('value', connHandler);
+        };
+      }, [refPath]);
+
+      const updatePanel = useCallback((panelNum, stage) => {
+        if (!db) return;
+        const ref = db.ref(`${refPath}/p${panelNum}`);
+        if (stage === null) {
+          ref.remove();
+        } else {
+          ref.set(stage);
+        }
+      }, [refPath]);
+
+      const resetAll = useCallback(() => {
+        if (!db) return;
+        db.ref(refPath).remove();
+      }, [refPath]);
+
+      return { stages, connected, updatePanel, resetAll };
+    }
+
+    // ─── PanelGrid component ───
+    function PanelGrid({ setId }) {
+      const { stages, connected, updatePanel, resetAll } = useFirebaseSet(setId);
+
+      const counts = useMemo(() => {
+        const c = { [null]: 0, Started: 0, Printed: 0, Laminated: 0, Done: 0 };
+        Object.values(stages).forEach(s => c[s]++);
+        return c;
+      }, [stages]);
+
+      const handleClick = useCallback((panelNum) => {
+        const curIdx = STAGES.indexOf(stages[panelNum]);
+        const nextIdx = (curIdx + 1) % STAGES.length;
+        updatePanel(panelNum, STAGES[nextIdx]);
+      }, [stages, updatePanel]);
+
+      const handleReset = useCallback(() => {
+        if (!window.confirm(`Reset all panels in Set ${setId} to None?`)) return;
+        resetAll();
+      }, [setId, resetAll]);
+
+      const displayRows = [3, 2, 1, 0];
+
+      return (
+        <div style={{ marginBottom: 32 }}>
+          <h2 style={{ textAlign: 'center', fontSize: '1.1rem', marginBottom: 8, color: '#fff' }}>
+            Set {setId}
+          </h2>
+
+          {/* Summary Bar */}
+          <div style={{
+            display: 'flex', justifyContent: 'center', gap: 12, flexWrap: 'wrap',
+            marginBottom: 10, alignItems: 'center'
+          }}>
+            {STAGES.map(stage => (
+              <div key={stage || 'none'} style={{
+                background: STAGE_COLORS[stage],
+                color: STAGE_TEXT_COLORS[stage],
+                padding: '4px 10px',
+                borderRadius: 4,
+                fontSize: '0.8rem',
+                fontWeight: 600,
+              }}>
+                {stage || 'None'}: {counts[stage]} / {TOTAL_PANELS}
+              </div>
+            ))}
+            <button onClick={handleReset} style={{
+              background: '#c0392b', color: '#fff', border: 'none',
+              padding: '4px 12px', borderRadius: 4, cursor: 'pointer',
+              fontSize: '0.8rem', fontWeight: 600,
+            }}>
+              Reset All
+            </button>
+          </div>
+
+          {/* Grid */}
+          <div style={{ display: 'flex', justifyContent: 'center' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 1, width: '100%' }}>
+              {displayRows.map(rowFromBottom => {
+                const rowLabel = `Row ${rowFromBottom + 1}`;
+                const rowFromTop = ROWS - 1 - rowFromBottom;
+                const bgY = ROWS > 1 ? (rowFromTop / (ROWS - 1)) * 100 : 0;
+
+                return (
+                  <div key={rowFromBottom} style={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <div style={{
+                      width: 44, minWidth: 44, textAlign: 'right', paddingRight: 4,
+                      fontSize: '0.65rem', color: '#aaa', fontWeight: 600,
+                    }}>
+                      {rowLabel}
+                    </div>
+                    {Array.from({ length: COLS }, (_, colIdx) => {
+                      const pNum = panelNumber(rowFromBottom, colIdx);
+                      const stage = stages[pNum];
+                      const bgX = COLS > 1 ? (colIdx / (COLS - 1)) * 100 : 0;
+
+                      return (
+                        <div
+                          key={pNum}
+                          onClick={() => handleClick(pNum)}
+                          title={`Panel ${pNum} — ${stage || 'None'} (Row ${rowFromBottom + 1}, Col ${colIdx + 1})`}
+                          style={{
+                            flex: 1,
+                            aspectRatio: '1 / 1.6',
+                            borderRadius: 1,
+                            cursor: 'pointer',
+                            userSelect: 'none',
+                            position: 'relative',
+                            overflow: 'hidden',
+                            border: '1px solid rgba(255,255,255,0.12)',
+                            backgroundImage: `url(${DEFAULT_IMAGE})`,
+                            backgroundSize: `${COLS * 100}% ${ROWS * 100}%`,
+                            backgroundPosition: `${bgX}% ${bgY}%`,
+                            backgroundRepeat: 'no-repeat',
+                          }}
+                        >
+                          <div style={{
+                            position: 'absolute',
+                            inset: 0,
+                            backdropFilter: 'grayscale(100%)',
+                            WebkitBackdropFilter: 'grayscale(100%)',
+                            background: 'rgba(0, 0, 0, 0.35)',
+                          }} />
+                          <div style={{
+                            position: 'absolute',
+                            inset: 0,
+                            background: STAGE_OVERLAY[stage],
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: '0.5rem',
+                            fontWeight: 700,
+                            color: '#fff',
+                            textShadow: '0 0 3px rgba(0,0,0,0.9)',
+                            transition: 'background 0.15s',
+                          }}>
+                            {pNum}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Column numbers */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 1, marginTop: 2 }}>
+            <div style={{ width: 44, minWidth: 44 }} />
+            {Array.from({ length: COLS }, (_, i) => (
+              <div key={i} style={{
+                flex: 1,
+                textAlign: 'center',
+                fontSize: '0.5rem',
+                color: '#666',
+              }}>
+                {i + 1}
+              </div>
+            ))}
+          </div>
+
+          <div style={{
+            marginTop: 8, textAlign: 'center', fontSize: '0.7rem', color: '#888'
+          }}>
+            Click a panel to cycle: None → Started → Printed → Laminated → Done → None
+          </div>
+        </div>
+      );
+    }
+
+    // ─── Setup instructions screen ───
+    function SetupScreen() {
+      return (
+        <div style={{
+          maxWidth: 600, margin: '60px auto', padding: 32,
+          background: '#222', borderRadius: 12, textAlign: 'left',
+        }}>
+          <h1 style={{ color: '#fff', fontSize: '1.3rem', marginBottom: 16, textAlign: 'center' }}>
+            Firebase Setup Required
+          </h1>
+          <p style={{ color: '#ccc', marginBottom: 16, lineHeight: 1.6 }}>
+            This app uses Firebase Realtime Database for live sync. Follow these steps (takes ~3 minutes):
+          </p>
+          <ol style={{ color: '#ccc', lineHeight: 2, paddingLeft: 20 }}>
+            <li>Go to <strong style={{ color: '#7ec8e3' }}>console.firebase.google.com</strong></li>
+            <li>Click <strong>Add project</strong> — name it anything (e.g. "jefferson-roof")</li>
+            <li>Disable Google Analytics (not needed), click <strong>Create Project</strong></li>
+            <li>In the left sidebar, click <strong>Build → Realtime Database</strong></li>
+            <li>Click <strong>Create Database</strong> → pick any location → select <strong>Start in test mode</strong> → Enable</li>
+            <li>Go to <strong>Project Settings</strong> (gear icon) → scroll to <strong>Your apps</strong> → click the web icon <strong>{"</>"}</strong></li>
+            <li>Register the app (any name) — copy the <strong>firebaseConfig</strong> object</li>
+            <li>Open <strong>index.html</strong> and replace the <code style={{ color: '#f0d000' }}>FIREBASE_CONFIG</code> values with your config</li>
+            <li>Commit, push, and redeploy to Vercel</li>
+          </ol>
+          <p style={{ color: '#888', marginTop: 16, fontSize: '0.85rem', textAlign: 'center' }}>
+            Firebase free tier supports up to 100 simultaneous connections — more than enough.
+          </p>
+        </div>
+      );
+    }
+
+    function App() {
+      if (needsSetup) return <SetupScreen />;
+
+      return (
+        <div style={{ maxWidth: '100%', margin: '0 auto' }}>
+          <div className="conn-status connected" id="conn-badge">Live</div>
+          <h1 style={{ textAlign: 'center', fontSize: '1.3rem', marginBottom: 16, color: '#fff' }}>
+            Jefferson Health Training Complex — Roof Panel Tracker
+          </h1>
+          <PanelGrid setId={1} />
+          <PanelGrid setId={2} />
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
