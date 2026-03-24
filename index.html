@@ -16,6 +16,12 @@
       min-height: 100vh;
     }
     #root { padding: 12px; }
+    .conn-status {
+      position: fixed; top: 8px; right: 12px; padding: 4px 10px;
+      border-radius: 4px; font-size: 0.7rem; font-weight: 600; z-index: 100;
+    }
+    .conn-status.connected { background: #4caf50; color: #fff; }
+    .conn-status.disconnected { background: #c0392b; color: #fff; }
   </style>
 </head>
 <body>
@@ -52,48 +58,90 @@
 
     const DEFAULT_IMAGE = 'RoofGraphic_3dpi.png';
 
-    // Panel numbering: left-to-right, bottom row first.
     function panelNumber(rowFromBottom, col) {
       return rowFromBottom * COLS + col + 1;
     }
 
-    // --- localStorage helpers (set-aware) ---
-    function loadStages(setId) {
-      const key = `jefferson_roof_stages_set${setId}`;
-      try {
-        const raw = localStorage.getItem(key);
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          const result = {};
-          for (let i = 1; i <= TOTAL_PANELS; i++) {
-            result[i] = parsed[i] || null;
-          }
-          return result;
-        }
-      } catch (e) { /* ignore */ }
+    function initStages() {
       const init = {};
       for (let i = 1; i <= TOTAL_PANELS; i++) init[i] = null;
       return init;
     }
 
-    function saveStages(setId, stages) {
-      const key = `jefferson_roof_stages_set${setId}`;
-      try {
-        const sparse = {};
-        for (const [k, v] of Object.entries(stages)) {
-          if (v !== null) sparse[k] = v;
+    function buildStagesFromSparse(sparse) {
+      const result = initStages();
+      if (sparse) {
+        for (const [k, v] of Object.entries(sparse)) {
+          result[k] = v;
         }
-        localStorage.setItem(key, JSON.stringify(sparse));
-      } catch (e) { /* ignore */ }
+      }
+      return result;
+    }
+
+    // --- WebSocket connection ---
+    function useWebSocket() {
+      const wsRef = useRef(null);
+      const listenersRef = useRef(new Set());
+      const [connected, setConnected] = useState(false);
+
+      const addListener = useCallback((fn) => {
+        listenersRef.current.add(fn);
+        return () => listenersRef.current.delete(fn);
+      }, []);
+
+      const send = useCallback((data) => {
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify(data));
+        }
+      }, []);
+
+      useEffect(() => {
+        let reconnectTimer;
+        function connect() {
+          const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+          const ws = new WebSocket(`${protocol}//${location.host}`);
+          wsRef.current = ws;
+
+          ws.onopen = () => setConnected(true);
+          ws.onclose = () => {
+            setConnected(false);
+            reconnectTimer = setTimeout(connect, 2000);
+          };
+          ws.onerror = () => ws.close();
+          ws.onmessage = (e) => {
+            try {
+              const msg = JSON.parse(e.data);
+              listenersRef.current.forEach(fn => fn(msg));
+            } catch (err) { /* ignore */ }
+          };
+        }
+        connect();
+        return () => {
+          clearTimeout(reconnectTimer);
+          if (wsRef.current) wsRef.current.close();
+        };
+      }, []);
+
+      return { connected, send, addListener };
     }
 
     // --- PanelGrid component (one set) ---
-    function PanelGrid({ setId }) {
-      const [stages, setStages] = useState(() => loadStages(setId));
+    function PanelGrid({ setId, send, addListener }) {
+      const [stages, setStages] = useState(initStages);
 
+      // Listen for server messages
       useEffect(() => {
-        saveStages(setId, stages);
-      }, [stages, setId]);
+        return addListener((msg) => {
+          if (msg.type === 'init') {
+            const sparse = msg.state[`set${setId}`];
+            setStages(buildStagesFromSparse(sparse));
+          } else if (msg.type === 'update' && msg.setId === setId) {
+            setStages(prev => ({ ...prev, [msg.panelNum]: msg.stage }));
+          } else if (msg.type === 'reset' && msg.setId === setId) {
+            setStages(initStages());
+          }
+        });
+      }, [setId, addListener]);
 
       const counts = useMemo(() => {
         const c = { [null]: 0, Started: 0, Printed: 0, Laminated: 0, Done: 0 };
@@ -105,18 +153,17 @@
         setStages(prev => {
           const curIdx = STAGES.indexOf(prev[panelNum]);
           const nextIdx = (curIdx + 1) % STAGES.length;
-          return { ...prev, [panelNum]: STAGES[nextIdx] };
+          const nextStage = STAGES[nextIdx];
+          send({ type: 'update', setId, panelNum, stage: nextStage });
+          return { ...prev, [panelNum]: nextStage };
         });
-      }, []);
+      }, [setId, send]);
 
       const handleReset = useCallback(() => {
         if (!window.confirm(`Reset all panels in Set ${setId} to None?`)) return;
-        setStages(() => {
-          const reset = {};
-          for (let i = 1; i <= TOTAL_PANELS; i++) reset[i] = null;
-          return reset;
-        });
-      }, [setId]);
+        send({ type: 'reset', setId });
+        setStages(initStages());
+      }, [setId, send]);
 
       const displayRows = [3, 2, 1, 0];
 
@@ -252,13 +299,18 @@
     }
 
     function App() {
+      const { connected, send, addListener } = useWebSocket();
+
       return (
         <div style={{ maxWidth: '100%', margin: '0 auto' }}>
+          <div className={`conn-status ${connected ? 'connected' : 'disconnected'}`}>
+            {connected ? 'Live' : 'Reconnecting...'}
+          </div>
           <h1 style={{ textAlign: 'center', fontSize: '1.3rem', marginBottom: 16, color: '#fff' }}>
             Jefferson Health Training Complex — Roof Panel Tracker
           </h1>
-          <PanelGrid setId={1} />
-          <PanelGrid setId={2} />
+          <PanelGrid setId={1} send={send} addListener={addListener} />
+          <PanelGrid setId={2} send={send} addListener={addListener} />
         </div>
       );
     }
