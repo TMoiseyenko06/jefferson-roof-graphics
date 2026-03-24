@@ -27,9 +27,6 @@
     const ROWS = 4;
     const TOTAL_PANELS = COLS * ROWS; // 196
 
-    const STORAGE_KEY_STAGES = 'jefferson_roof_stages';
-    const STORAGE_KEY_IMAGE = 'jefferson_roof_image';
-
     const STAGES = [null, 'Started', 'Printed', 'Laminated', 'Done'];
     const STAGE_OVERLAY = {
       [null]: 'rgba(0, 0, 0, 0)',
@@ -53,22 +50,20 @@
       Done: '#fff',
     };
 
+    const DEFAULT_IMAGE = 'RoofGraphic_3dpi.png';
+
     // Panel numbering: left-to-right, bottom row first.
-    //   Row 1 (bottom): panels 1-49
-    //   Row 2: panels 50-98
-    //   Row 3: panels 99-147
-    //   Row 4 (top): panels 148-196
     function panelNumber(rowFromBottom, col) {
       return rowFromBottom * COLS + col + 1;
     }
 
-    // --- localStorage helpers ---
-    function loadStages() {
+    // --- localStorage helpers (set-aware) ---
+    function loadStages(setId) {
+      const key = `jefferson_roof_stages_set${setId}`;
       try {
-        const raw = localStorage.getItem(STORAGE_KEY_STAGES);
+        const raw = localStorage.getItem(key);
         if (raw) {
           const parsed = JSON.parse(raw);
-          // Rebuild full object ensuring all 196 keys exist
           const result = {};
           for (let i = 1; i <= TOTAL_PANELS; i++) {
             result[i] = parsed[i] || null;
@@ -81,51 +76,24 @@
       return init;
     }
 
-    function saveStages(stages) {
+    function saveStages(setId, stages) {
+      const key = `jefferson_roof_stages_set${setId}`;
       try {
-        // Only save non-null stages to reduce storage size
         const sparse = {};
         for (const [k, v] of Object.entries(stages)) {
           if (v !== null) sparse[k] = v;
         }
-        localStorage.setItem(STORAGE_KEY_STAGES, JSON.stringify(sparse));
+        localStorage.setItem(key, JSON.stringify(sparse));
       } catch (e) { /* ignore */ }
     }
 
-    function loadImage() {
-      try {
-        return localStorage.getItem(STORAGE_KEY_IMAGE);
-      } catch (e) { return null; }
-    }
+    // --- PanelGrid component (one set) ---
+    function PanelGrid({ setId }) {
+      const [stages, setStages] = useState(() => loadStages(setId));
 
-    function saveImage(dataUrl) {
-      try {
-        localStorage.setItem(STORAGE_KEY_IMAGE, dataUrl);
-      } catch (e) {
-        console.warn('Image too large for localStorage, will need to reload on refresh.');
-      }
-    }
-
-    function fileToDataUrl(file) {
-      return new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.readAsDataURL(file);
-      });
-    }
-
-    const DEFAULT_IMAGE = 'RoofGraphic_3dpi.png';
-
-    function App() {
-      const [imageUrl, setImageUrl] = useState(() => loadImage() || DEFAULT_IMAGE);
-      const fileInputRef = useRef(null);
-
-      const [stages, setStages] = useState(loadStages);
-
-      // Persist stages whenever they change
       useEffect(() => {
-        saveStages(stages);
-      }, [stages]);
+        saveStages(setId, stages);
+      }, [stages, setId]);
 
       const counts = useMemo(() => {
         const c = { [null]: 0, Started: 0, Printed: 0, Laminated: 0, Done: 0 };
@@ -142,52 +110,21 @@
       }, []);
 
       const handleReset = useCallback(() => {
-        if (!window.confirm('Reset all panels to None?')) return;
+        if (!window.confirm(`Reset all panels in Set ${setId} to None?`)) return;
         setStages(() => {
           const reset = {};
           for (let i = 1; i <= TOTAL_PANELS; i++) reset[i] = null;
           return reset;
         });
-      }, []);
+      }, [setId]);
 
-      const handleFile = useCallback(async (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-        const dataUrl = await fileToDataUrl(file);
-        setImageUrl(dataUrl);
-        saveImage(dataUrl);
-      }, []);
-
-      // Display: top row (row 4) at top of screen, bottom row (row 1) at bottom
       const displayRows = [3, 2, 1, 0];
 
       return (
-        <div>
-          <h1 style={{ textAlign: 'center', fontSize: '1.2rem', marginBottom: 8, color: '#fff' }}>
-            Jefferson Health Training Complex — Roof Panel Tracker
-          </h1>
-
-          {/* Image loader - only show if no image loaded */}
-          {!imageUrl && (
-            <div style={{
-              textAlign: 'center', marginBottom: 12, padding: 16,
-              border: '2px dashed #555', borderRadius: 8, background: '#222'
-            }}>
-              <p style={{ marginBottom: 8, fontSize: '0.9rem' }}>
-                Load the roof graphic image to use as panel backgrounds
-              </p>
-              <button
-                onClick={() => fileInputRef.current.click()}
-                style={{
-                  background: '#3498db', color: '#fff', border: 'none',
-                  padding: '8px 20px', borderRadius: 4, cursor: 'pointer',
-                  fontSize: '0.9rem', fontWeight: 600,
-                }}
-              >
-                Choose Image File
-              </button>
-            </div>
-          )}
+        <div style={{ marginBottom: 32 }}>
+          <h2 style={{ textAlign: 'center', fontSize: '1.1rem', marginBottom: 8, color: '#fff' }}>
+            Set {setId}
+          </h2>
 
           {/* Summary Bar */}
           <div style={{
@@ -213,30 +150,11 @@
             }}>
               Reset All
             </button>
-            {imageUrl && (
-              <button
-                onClick={() => fileInputRef.current.click()}
-                style={{
-                  background: '#555', color: '#fff', border: 'none',
-                  padding: '4px 12px', borderRadius: 4, cursor: 'pointer',
-                  fontSize: '0.8rem', fontWeight: 600,
-                }}
-              >
-                Change Image
-              </button>
-            )}
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              onChange={handleFile}
-              style={{ display: 'none' }}
-            />
           </div>
 
           {/* Grid */}
-          <div style={{ overflowX: 'auto' }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 1, minWidth: 'fit-content' }}>
+          <div style={{ display: 'flex', justifyContent: 'center' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 1, width: '100%' }}>
               {displayRows.map(rowFromBottom => {
                 const rowLabel = `Row ${rowFromBottom + 1}`;
                 const rowFromTop = ROWS - 1 - rowFromBottom;
@@ -261,9 +179,7 @@
                           onClick={() => handleClick(pNum)}
                           title={`Panel ${pNum} — ${stage || 'None'} (Row ${rowFromBottom + 1}, Col ${colIdx + 1})`}
                           style={{
-                            width: 'calc((100vw - 80px) / 49)',
-                            maxWidth: 28,
-                            minWidth: 16,
+                            flex: 1,
                             aspectRatio: '1 / 1.6',
                             borderRadius: 1,
                             cursor: 'pointer',
@@ -271,14 +187,13 @@
                             position: 'relative',
                             overflow: 'hidden',
                             border: '1px solid rgba(255,255,255,0.12)',
-                            backgroundImage: imageUrl ? `url(${imageUrl})` : 'none',
-                            backgroundColor: imageUrl ? 'transparent' : '#888',
+                            backgroundImage: `url(${DEFAULT_IMAGE})`,
                             backgroundSize: `${COLS * 100}% ${ROWS * 100}%`,
                             backgroundPosition: `${bgX}% ${bgY}%`,
                             backgroundRepeat: 'no-repeat',
                           }}
                         >
-                          {/* Grayscale + dim overlay to mute the image */}
+                          {/* Grayscale + dim overlay */}
                           <div style={{
                             position: 'absolute',
                             inset: 0,
@@ -311,14 +226,12 @@
             </div>
           </div>
 
-          {/* Column numbers along bottom */}
+          {/* Column numbers */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 1, marginTop: 2 }}>
             <div style={{ width: 44, minWidth: 44 }} />
             {Array.from({ length: COLS }, (_, i) => (
               <div key={i} style={{
-                width: 'calc((100vw - 80px) / 49)',
-                maxWidth: 28,
-                minWidth: 16,
+                flex: 1,
                 textAlign: 'center',
                 fontSize: '0.5rem',
                 color: '#666',
@@ -330,10 +243,22 @@
 
           {/* Legend */}
           <div style={{
-            marginTop: 12, textAlign: 'center', fontSize: '0.7rem', color: '#888'
+            marginTop: 8, textAlign: 'center', fontSize: '0.7rem', color: '#888'
           }}>
             Click a panel to cycle: None → Started → Printed → Laminated → Done → None
           </div>
+        </div>
+      );
+    }
+
+    function App() {
+      return (
+        <div style={{ maxWidth: '100%', margin: '0 auto' }}>
+          <h1 style={{ textAlign: 'center', fontSize: '1.3rem', marginBottom: 16, color: '#fff' }}>
+            Jefferson Health Training Complex — Roof Panel Tracker
+          </h1>
+          <PanelGrid setId={1} />
+          <PanelGrid setId={2} />
         </div>
       );
     }
