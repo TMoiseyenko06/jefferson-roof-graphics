@@ -7,6 +7,8 @@
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -22,6 +24,7 @@
     }
     .conn-status.connected { background: #4caf50; color: #fff; }
     .conn-status.disconnected { background: #c0392b; color: #fff; }
+    .conn-status.setup { background: #e88a2a; color: #fff; }
   </style>
 </head>
 <body>
@@ -68,80 +71,93 @@
       return init;
     }
 
-    function buildStagesFromSparse(sparse) {
+    function buildStagesFromSnapshot(snap) {
       const result = initStages();
-      if (sparse) {
-        for (const [k, v] of Object.entries(sparse)) {
-          result[k] = v;
+      if (snap) {
+        for (const [k, v] of Object.entries(snap)) {
+          if (k.startsWith('p')) {
+            const num = k.slice(1);
+            result[num] = v;
+          }
         }
       }
       return result;
     }
 
-    // --- WebSocket connection ---
-    function useWebSocket() {
-      const wsRef = useRef(null);
-      const listenersRef = useRef(new Set());
-      const [connected, setConnected] = useState(false);
+    // ─── Firebase config ───
+    // INSTRUCTIONS: Replace these values with your Firebase project config.
+    // 1. Go to https://console.firebase.google.com
+    // 2. Create a new project (or use an existing one)
+    // 3. Go to Project Settings > General > Your apps > Add web app
+    // 4. Copy the firebaseConfig values below
+    // 5. Go to Realtime Database > Create Database > Start in TEST MODE
+    const FIREBASE_CONFIG = {
+      apiKey: "YOUR_API_KEY",
+      authDomain: "YOUR_PROJECT.firebaseapp.com",
+      databaseURL: "https://YOUR_PROJECT-default-rtdb.firebaseio.com",
+      projectId: "YOUR_PROJECT",
+      storageBucket: "YOUR_PROJECT.appspot.com",
+      messagingSenderId: "YOUR_SENDER_ID",
+      appId: "YOUR_APP_ID"
+    };
 
-      const addListener = useCallback((fn) => {
-        listenersRef.current.add(fn);
-        return () => listenersRef.current.delete(fn);
-      }, []);
-
-      const send = useCallback((data) => {
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify(data));
-        }
-      }, []);
-
-      useEffect(() => {
-        let reconnectTimer;
-        function connect() {
-          const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-          const ws = new WebSocket(`${protocol}//${location.host}`);
-          wsRef.current = ws;
-
-          ws.onopen = () => setConnected(true);
-          ws.onclose = () => {
-            setConnected(false);
-            reconnectTimer = setTimeout(connect, 2000);
-          };
-          ws.onerror = () => ws.close();
-          ws.onmessage = (e) => {
-            try {
-              const msg = JSON.parse(e.data);
-              listenersRef.current.forEach(fn => fn(msg));
-            } catch (err) { /* ignore */ }
-          };
-        }
-        connect();
-        return () => {
-          clearTimeout(reconnectTimer);
-          if (wsRef.current) wsRef.current.close();
-        };
-      }, []);
-
-      return { connected, send, addListener };
+    const needsSetup = FIREBASE_CONFIG.apiKey === "YOUR_API_KEY";
+    let db = null;
+    if (!needsSetup) {
+      firebase.initializeApp(FIREBASE_CONFIG);
+      db = firebase.database();
     }
 
-    // --- PanelGrid component (one set) ---
-    function PanelGrid({ setId, send, addListener }) {
+    // ─── Firebase hook for a single set ───
+    function useFirebaseSet(setId) {
       const [stages, setStages] = useState(initStages);
+      const [connected, setConnected] = useState(false);
+      const refPath = `panels/set${setId}`;
 
-      // Listen for server messages
       useEffect(() => {
-        return addListener((msg) => {
-          if (msg.type === 'init') {
-            const sparse = msg.state[`set${setId}`];
-            setStages(buildStagesFromSparse(sparse));
-          } else if (msg.type === 'update' && msg.setId === setId) {
-            setStages(prev => ({ ...prev, [msg.panelNum]: msg.stage }));
-          } else if (msg.type === 'reset' && msg.setId === setId) {
-            setStages(initStages());
-          }
+        if (!db) return;
+        const ref = db.ref(refPath);
+
+        // Listen for real-time changes
+        const handler = ref.on('value', (snapshot) => {
+          setConnected(true);
+          const val = snapshot.val();
+          setStages(buildStagesFromSnapshot(val));
         });
-      }, [setId, addListener]);
+
+        // Connection state
+        const connRef = db.ref('.info/connected');
+        const connHandler = connRef.on('value', (snap) => {
+          setConnected(snap.val() === true);
+        });
+
+        return () => {
+          ref.off('value', handler);
+          connRef.off('value', connHandler);
+        };
+      }, [refPath]);
+
+      const updatePanel = useCallback((panelNum, stage) => {
+        if (!db) return;
+        const ref = db.ref(`${refPath}/p${panelNum}`);
+        if (stage === null) {
+          ref.remove();
+        } else {
+          ref.set(stage);
+        }
+      }, [refPath]);
+
+      const resetAll = useCallback(() => {
+        if (!db) return;
+        db.ref(refPath).remove();
+      }, [refPath]);
+
+      return { stages, connected, updatePanel, resetAll };
+    }
+
+    // ─── PanelGrid component ───
+    function PanelGrid({ setId }) {
+      const { stages, connected, updatePanel, resetAll } = useFirebaseSet(setId);
 
       const counts = useMemo(() => {
         const c = { [null]: 0, Started: 0, Printed: 0, Laminated: 0, Done: 0 };
@@ -150,20 +166,15 @@
       }, [stages]);
 
       const handleClick = useCallback((panelNum) => {
-        setStages(prev => {
-          const curIdx = STAGES.indexOf(prev[panelNum]);
-          const nextIdx = (curIdx + 1) % STAGES.length;
-          const nextStage = STAGES[nextIdx];
-          send({ type: 'update', setId, panelNum, stage: nextStage });
-          return { ...prev, [panelNum]: nextStage };
-        });
-      }, [setId, send]);
+        const curIdx = STAGES.indexOf(stages[panelNum]);
+        const nextIdx = (curIdx + 1) % STAGES.length;
+        updatePanel(panelNum, STAGES[nextIdx]);
+      }, [stages, updatePanel]);
 
       const handleReset = useCallback(() => {
         if (!window.confirm(`Reset all panels in Set ${setId} to None?`)) return;
-        send({ type: 'reset', setId });
-        setStages(initStages());
-      }, [setId, send]);
+        resetAll();
+      }, [setId, resetAll]);
 
       const displayRows = [3, 2, 1, 0];
 
@@ -240,7 +251,6 @@
                             backgroundRepeat: 'no-repeat',
                           }}
                         >
-                          {/* Grayscale + dim overlay */}
                           <div style={{
                             position: 'absolute',
                             inset: 0,
@@ -248,7 +258,6 @@
                             WebkitBackdropFilter: 'grayscale(100%)',
                             background: 'rgba(0, 0, 0, 0.35)',
                           }} />
-                          {/* Stage color overlay */}
                           <div style={{
                             position: 'absolute',
                             inset: 0,
@@ -288,7 +297,6 @@
             ))}
           </div>
 
-          {/* Legend */}
           <div style={{
             marginTop: 8, textAlign: 'center', fontSize: '0.7rem', color: '#888'
           }}>
@@ -298,19 +306,48 @@
       );
     }
 
+    // ─── Setup instructions screen ───
+    function SetupScreen() {
+      return (
+        <div style={{
+          maxWidth: 600, margin: '60px auto', padding: 32,
+          background: '#222', borderRadius: 12, textAlign: 'left',
+        }}>
+          <h1 style={{ color: '#fff', fontSize: '1.3rem', marginBottom: 16, textAlign: 'center' }}>
+            Firebase Setup Required
+          </h1>
+          <p style={{ color: '#ccc', marginBottom: 16, lineHeight: 1.6 }}>
+            This app uses Firebase Realtime Database for live sync. Follow these steps (takes ~3 minutes):
+          </p>
+          <ol style={{ color: '#ccc', lineHeight: 2, paddingLeft: 20 }}>
+            <li>Go to <strong style={{ color: '#7ec8e3' }}>console.firebase.google.com</strong></li>
+            <li>Click <strong>Add project</strong> — name it anything (e.g. "jefferson-roof")</li>
+            <li>Disable Google Analytics (not needed), click <strong>Create Project</strong></li>
+            <li>In the left sidebar, click <strong>Build → Realtime Database</strong></li>
+            <li>Click <strong>Create Database</strong> → pick any location → select <strong>Start in test mode</strong> → Enable</li>
+            <li>Go to <strong>Project Settings</strong> (gear icon) → scroll to <strong>Your apps</strong> → click the web icon <strong>{"</>"}</strong></li>
+            <li>Register the app (any name) — copy the <strong>firebaseConfig</strong> object</li>
+            <li>Open <strong>index.html</strong> and replace the <code style={{ color: '#f0d000' }}>FIREBASE_CONFIG</code> values with your config</li>
+            <li>Commit, push, and redeploy to Vercel</li>
+          </ol>
+          <p style={{ color: '#888', marginTop: 16, fontSize: '0.85rem', textAlign: 'center' }}>
+            Firebase free tier supports up to 100 simultaneous connections — more than enough.
+          </p>
+        </div>
+      );
+    }
+
     function App() {
-      const { connected, send, addListener } = useWebSocket();
+      if (needsSetup) return <SetupScreen />;
 
       return (
         <div style={{ maxWidth: '100%', margin: '0 auto' }}>
-          <div className={`conn-status ${connected ? 'connected' : 'disconnected'}`}>
-            {connected ? 'Live' : 'Reconnecting...'}
-          </div>
+          <div className="conn-status connected" id="conn-badge">Live</div>
           <h1 style={{ textAlign: 'center', fontSize: '1.3rem', marginBottom: 16, color: '#fff' }}>
             Jefferson Health Training Complex — Roof Panel Tracker
           </h1>
-          <PanelGrid setId={1} send={send} addListener={addListener} />
-          <PanelGrid setId={2} send={send} addListener={addListener} />
+          <PanelGrid setId={1} />
+          <PanelGrid setId={2} />
         </div>
       );
     }
