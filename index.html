@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jefferson Roof Panel Production Tracker</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      min-height: 100vh;
+    }
+    #root { padding: 12px; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useCallback, useMemo } = React;
+
+    const COLS = 49;
+    const ROWS = 4;
+    const TOTAL_PANELS = COLS * ROWS;
+
+    const STAGES = [null, 'Started', 'Printed', 'Laminated', 'Done'];
+    const STAGE_COLORS = {
+      [null]: '#d0d0d0',
+      Started: '#f0d000',
+      Printed: '#e88a2a',
+      Laminated: '#7ec8e3',
+      Done: '#4caf50',
+    };
+    const STAGE_TEXT_COLORS = {
+      [null]: '#444',
+      Started: '#444',
+      Printed: '#fff',
+      Laminated: '#1a1a2e',
+      Done: '#fff',
+    };
+
+    /*
+     * Panel numbering: left-to-right, bottom row first.
+     *   Row 1 (bottom): panels 1–49
+     *   Row 2: panels 50–98
+     *   Row 3: panels 99–147
+     *   Row 4 (top): panels 148–196
+     *
+     * Empty panels determined from SVG analysis:
+     *   - Columns 1-3 and 47-49 on rows 1 & 4 (top/bottom edges)
+     *   - Columns 1-2 and 48-49 on rows 2 & 3 (middle rows have slightly more content)
+     */
+    function buildEmptySet() {
+      const empty = new Set();
+      // Row 1 (bottom): panels 1-49, cols 1-3 empty, cols 47-49 empty
+      [1, 2, 3, 47, 48, 49].forEach(c => empty.add(c));
+      // Row 2: panels 50-98, cols 1-2 empty, cols 48-49 empty
+      [50, 51, 97, 98].forEach(c => empty.add(c));
+      // Row 3: panels 99-147, cols 1-2 empty, cols 48-49 empty
+      [99, 100, 146, 147].forEach(c => empty.add(c));
+      // Row 4 (top): panels 148-196, cols 1-3 empty, cols 47-49 empty
+      [148, 149, 150, 194, 195, 196].forEach(c => empty.add(c));
+      return empty;
+    }
+
+    const EMPTY_PANELS = buildEmptySet();
+
+    function panelNumber(row, col) {
+      // row 0 = bottom (row 1), row 3 = top (row 4)
+      return row * COLS + col + 1;
+    }
+
+    function App() {
+      const [stages, setStages] = useState(() => {
+        const init = {};
+        for (let i = 1; i <= TOTAL_PANELS; i++) {
+          if (!EMPTY_PANELS.has(i)) init[i] = null;
+        }
+        return init;
+      });
+
+      const activePanelCount = useMemo(() => TOTAL_PANELS - EMPTY_PANELS.size, []);
+
+      const counts = useMemo(() => {
+        const c = { [null]: 0, Started: 0, Printed: 0, Laminated: 0, Done: 0 };
+        Object.values(stages).forEach(s => c[s]++);
+        return c;
+      }, [stages]);
+
+      const handleClick = useCallback((panelNum) => {
+        setStages(prev => {
+          const curIdx = STAGES.indexOf(prev[panelNum]);
+          const nextIdx = (curIdx + 1) % STAGES.length;
+          return { ...prev, [panelNum]: STAGES[nextIdx] };
+        });
+      }, []);
+
+      const handleReset = useCallback(() => {
+        setStages(prev => {
+          const reset = {};
+          Object.keys(prev).forEach(k => reset[k] = null);
+          return reset;
+        });
+      }, []);
+
+      // Display: top row (row 4) at top of screen, bottom row (row 1) at bottom
+      const displayRows = [3, 2, 1, 0]; // row indices (0=bottom=row1)
+
+      return (
+        <div>
+          <h1 style={{ textAlign: 'center', fontSize: '1.2rem', marginBottom: 8, color: '#fff' }}>
+            Jefferson Health Training Complex — Roof Panel Tracker
+          </h1>
+
+          {/* Summary Bar */}
+          <div style={{
+            display: 'flex', justifyContent: 'center', gap: 12, flexWrap: 'wrap',
+            marginBottom: 10, alignItems: 'center'
+          }}>
+            {STAGES.map(stage => (
+              <div key={stage || 'none'} style={{
+                background: STAGE_COLORS[stage],
+                color: STAGE_TEXT_COLORS[stage],
+                padding: '4px 10px',
+                borderRadius: 4,
+                fontSize: '0.8rem',
+                fontWeight: 600,
+              }}>
+                {stage || 'None'}: {counts[stage]} / {activePanelCount}
+              </div>
+            ))}
+            <button onClick={handleReset} style={{
+              background: '#c0392b', color: '#fff', border: 'none',
+              padding: '4px 12px', borderRadius: 4, cursor: 'pointer',
+              fontSize: '0.8rem', fontWeight: 600,
+            }}>
+              Reset All
+            </button>
+          </div>
+
+          {/* Grid */}
+          <div style={{ overflowX: 'auto' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 'fit-content' }}>
+              {displayRows.map(rowIdx => {
+                const rowLabel = `Row ${rowIdx + 1}`;
+                return (
+                  <div key={rowIdx} style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                    <div style={{
+                      width: 44, minWidth: 44, textAlign: 'right', paddingRight: 4,
+                      fontSize: '0.65rem', color: '#aaa', fontWeight: 600,
+                    }}>
+                      {rowLabel}
+                    </div>
+                    {Array.from({ length: COLS }, (_, colIdx) => {
+                      const pNum = panelNumber(rowIdx, colIdx);
+                      const isEmpty = EMPTY_PANELS.has(pNum);
+                      const stage = stages[pNum];
+
+                      if (isEmpty) {
+                        return (
+                          <div key={pNum} style={{
+                            width: 'calc((100vw - 80px) / 49)',
+                            maxWidth: 28,
+                            minWidth: 16,
+                            height: 36,
+                            background: '#3a3a4a',
+                            borderRadius: 2,
+                            opacity: 0.5,
+                          }} title={`Panel ${pNum} (empty)`} />
+                        );
+                      }
+
+                      return (
+                        <div
+                          key={pNum}
+                          onClick={() => handleClick(pNum)}
+                          title={`Panel ${pNum} — ${stage || 'None'}`}
+                          style={{
+                            width: 'calc((100vw - 80px) / 49)',
+                            maxWidth: 28,
+                            minWidth: 16,
+                            height: 36,
+                            background: STAGE_COLORS[stage],
+                            color: STAGE_TEXT_COLORS[stage],
+                            borderRadius: 2,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: '0.55rem',
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                            userSelect: 'none',
+                            transition: 'transform 0.1s',
+                            border: '1px solid rgba(0,0,0,0.15)',
+                          }}
+                          onMouseEnter={e => e.currentTarget.style.transform = 'scale(1.15)'}
+                          onMouseLeave={e => e.currentTarget.style.transform = 'scale(1)'}
+                        >
+                          {pNum}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Column numbers along bottom */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 2, marginTop: 2 }}>
+            <div style={{ width: 44, minWidth: 44 }} />
+            {Array.from({ length: COLS }, (_, i) => (
+              <div key={i} style={{
+                width: 'calc((100vw - 80px) / 49)',
+                maxWidth: 28,
+                minWidth: 16,
+                textAlign: 'center',
+                fontSize: '0.5rem',
+                color: '#666',
+              }}>
+                {i + 1}
+              </div>
+            ))}
+          </div>
+
+          {/* Legend */}
+          <div style={{
+            marginTop: 12, textAlign: 'center', fontSize: '0.7rem', color: '#888'
+          }}>
+            Click a panel to cycle: None → Started → Printed → Laminated → Done → None
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
