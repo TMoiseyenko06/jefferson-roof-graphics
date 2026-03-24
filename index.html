@@ -114,8 +114,10 @@
       });
     }
 
+    const DEFAULT_IMAGE = 'RoofGraphic_3dpi.svg';
+
     function App() {
-      const [imageUrl, setImageUrl] = useState(() => loadImage());
+      const [imageUrl, setImageUrl] = useState(() => loadImage() || DEFAULT_IMAGE);
       const fileInputRef = useRef(null);
 
       const [stages, setStages] = useState(loadStages);
